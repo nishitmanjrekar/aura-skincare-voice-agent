@@ -1,43 +1,53 @@
-1. Why did you choose your particular architecture and technology stack?
+# Aura Skincare AI Voice Agent – Technical Assignment Answers
 
-I opted for a modular hybrid architecture pairing a **FastAPI (Python)** backend with **Groq’s high-speed inference engine** and **browser-native Web Speech APIs (SpeechRecognition & SpeechSynthesis)**:
+### 1. Why did you choose your particular architecture and technology stack?
 
-* **Sub-Second Latency & Low TTFT**: Voice conversations feel unnatural if response latency exceeds 1.5 seconds. By using Groq (`openai/gpt-oss-120b`), Time-to-First-Token is near-instantaneous (~200–300 ms), leaving ample budget for tool-calling and audio streaming without awkward conversational dead air.
-* **Deterministic Server-Side Tool Calling**: Housing tool execution and state logic in FastAPI ensures robust query sanitization (e.g., regex normalizations from `ord 101` to `ORD-101`) before touching database records, minimizing hallucinated order details.
-* **Zero-Friction Client-Side Audio**: Leveraging browser Web Speech APIs configured for Indian English (`en-IN`) eliminates the need for expensive third-party telephony SIP trunks or heavy WebRTC media servers, allowing evaluators to run and test the app friction-free directly in their browser.
+I chose a modular architecture combining a **FastAPI (Python) backend, Google's Gemini API, and browser-native Web Speech APIs (SpeechRecognition and SpeechSynthesis)**.
 
+- **LLM-powered conversational intelligence:** I integrated Gemini Flash-Lite to handle natural-language conversations, understand customer intent, and generate contextual responses. Its function-calling capabilities allow the agent to interact with backend tools instead of relying entirely on generated responses.
+- **Reliable server-side tool execution:** FastAPI manages business logic and tool execution. For example, when a customer asks about an order, the backend normalizes the order ID (such as converting `ord 101` to `ORD-101`) and retrieves the actual order information. This reduces the risk of hallucinated order details.
+- **Automated call summarization:** Gemini also generates structured call summaries containing customer intent, order ID, resolution status, and a concise conversation summary.
+- **Lightweight browser-based voice interaction:** Web Speech APIs handle speech recognition and text-to-speech, avoiding the need for expensive telephony infrastructure or a dedicated media server for this browser-based prototype.
 
+This architecture provides a clear separation between conversational intelligence, business logic, and voice interaction, making the system easier to maintain and extend.
 
-2. What was the most difficult part of the assignment, and how did you solve it?
+### 2. What was the most difficult part of the assignment, and how did you solve it?
 
-The most challenging aspect was **managing state transitions and preventing audio feedback loops (self-interruption)**:
+The most challenging aspect was **managing voice interaction and conversational turn-taking reliably**.
 
-* **The Problem**: Because speech recognition and speech synthesis run inside the same browser session, early iterations suffered from the microphone picking up the synthetic voice ("Aria") speaking through the laptop speakers, interpreting Aria's words as customer input and getting trapped in an infinite feedback loop.
-* **The Solution**: I implemented strict conversational turn-taking lifecycle hooks in JavaScript:
-1. The Web Speech recognition engine is explicitly stopped the instant an utterance is submitted for processing.
-2. The recognition engine remains paused while the synthetic voice plays (`SpeechSynthesisUtterance`).
-3. Listening is re-armed strictly inside the `onend` callback of the speech player, backed by visual state indicators (`Listening` $\rightarrow$ `Thinking` $\rightarrow$ `Speaking`) to keep the user aligned with the system's operational state.
+- **The Problem:** Speech recognition and speech synthesis operate within the same browser session. If the microphone remains active while the agent is speaking, it can capture the synthetic voice and mistakenly interpret it as new customer input. This creates audio feedback loops and interrupts the conversation.
+- **The Solution:** I worked on controlling the speech recognition and synthesis lifecycle:
+  1. Stop or pause speech recognition when a customer utterance is submitted for processing.
+  2. Keep recognition paused while the agent generates and speaks its response.
+  3. Resume listening after speech synthesis finishes.
+  4. Use visual state indicators such as Listening, Thinking, and Speaking to communicate the agent's current activity.
 
+I also had to ensure that the Gemini integration preserved the existing tool-calling workflow and conversation history so that switching LLM providers did not break the application's business logic.
 
+### 3. If you had one more week to work on this, what would you improve first and why?
 
-3. If you had one more week to work on this, what would you improve first and why?
+I would prioritize three improvements:
 
-* **Full-Duplex Streaming with Barge-In / Interruption Handling**: In natural conversations, customers frequently interrupt if an agent provides information they already know. I would transition from turn-based polling to a bi-directional WebSocket audio pipeline (e.g., Deepgram Nova-2 streaming STT + Cartesia/ElevenLabs streaming TTS) paired with Voice Activity Detection (VAD) to immediately truncate agent speech when the user speaks.
+- **Full-Duplex Voice Interaction with Barge-In:** The current interaction is turn-based. I would introduce a real-time audio pipeline using WebSockets, streaming speech recognition, and Voice Activity Detection (VAD). This would allow customers to interrupt the agent naturally instead of waiting for the entire response to finish.
 
+- **Hinglish and Multilingual Support:** Indian customers frequently mix Hindi and English. I would improve language detection, phonetic normalization, and multilingual prompting so the agent can understand requests such as "Mera order track kar do" and accurately extract alphanumeric order IDs.
 
-* **Hinglish & Phonetic Normalization**: Many Indian customers mix Hindi and English (e.g., *"Mera order track kar do"*) or spell out alphanumeric codes with regional accents. Adding phonetic transliteration and multi-lingual prompt few-shot examples would drastically reduce entity extraction errors for Indian delivery addresses and names.
+- **Semantic FAQ Caching:** Frequently asked questions about return policies, refunds, and delivery timelines could be handled through a semantic cache using embeddings and Redis. This would reduce repeated LLM requests, improve response times, and lower API costs.
 
+### 4. Imagine this agent is handling 1,000 customer conversations a day. What do you think would need to change or improve?
 
-* **Semantic FAQ Cache**: Frequently asked static policy questions (e.g., *"What is your return policy?"*) could be served from a Redis semantic cache (embedding lookup) in under 50 ms without incurring an LLM call.
+I would focus on scalability, reliability, security, and observability.
 
+- **Distributed Session Management:** Move conversation histories and session states from application memory into Redis or a persistent database. Each conversation would have a unique session ID, allowing multiple backend instances to handle concurrent conversations reliably.
 
+- **Production Database and Connection Pooling:** Replace mock or in-memory order records with PostgreSQL or another production database. Implement connection pooling, indexing, and appropriate read replicas as traffic grows.
 
-4. Imagine this agent is handling 1,000 customer conversations a day. What do you think would need to change or improve?
+- **Rate Limiting and API Cost Management:** Introduce request limits, authentication, and caller-based throttling to prevent abuse and control Gemini API consumption. Add caching for frequently requested information.
 
-* **Stateful Distributed Session Management**: Currently, conversation history is kept in memory. At 1,000 calls/day with concurrent sessions, this would cause memory leaks and prevent horizontal scaling. I would store session states, conversation buffers, and tool outputs in a distributed cache like **Redis** keyed by a unique `call_session_id`.
-* **Database Scaling & Connection Pooling**: Replace the in-memory mock dictionary with a production PostgreSQL/DynamoDB database utilizing connection pooling (PgBouncer) and read-replicas to prevent order lookup queries from choking the main transactional database.
-* **Leaky-Bucket Rate Limiting & API Quotas**: Implement IP- and caller-based rate limiters to prevent bot abuse or runaway API billing spikes on inference providers.
-* **Observability, Guardrail Auditing & Fallback Routing**:
-* Integrate an LLM observability platform (such as **Langfuse** or **Helicone**) to monitor latency bottlenecks, token consumption, and hallucination rates.
-* Set up secondary fallback providers (e.g., falling back from Groq to Anthropic/OpenAI or Deepgram to Whisper) in case of upstream downtime.
-* Implement automated escalation triggers: if `customer_intent` unresolved rate or customer frustration metrics cross a threshold, automatically flag and hot-transfer the session to a human support agent.
+- **Observability and Performance Monitoring:** Integrate tools such as Langfuse to monitor LLM latency, token consumption, tool execution, errors, and conversation quality. Track metrics such as average response time and successful order resolution rate.
+
+- **Fallback and Error Handling:** Implement retry mechanisms and an alternative model or provider strategy to handle upstream API failures. Ensure that temporary LLM failures do not cause the entire application to crash.
+
+- **Human Escalation:** Introduce escalation rules for unresolved queries, repeated failures, and frustrated customers. These conversations should be flagged for human support rather than allowing the agent to repeatedly provide ineffective responses.
+
+The objective would be to evolve the prototype into a reliable customer-support system that can handle concurrent conversations without compromising response quality or operational stability.
