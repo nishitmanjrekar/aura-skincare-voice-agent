@@ -1,54 +1,82 @@
+
 import json
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
-from groq import Groq
+from google import genai
+
 
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-MODEL_NAME = "openai/gpt-oss-120b"
+gemini_key = os.getenv("GEMINI_API_KEY")
+
+if not gemini_key:
+    raise ValueError(
+        f"GEMINI_API_KEY is missing! Checked file: {env_path.resolve()}"
+    )
+
+client = genai.Client(api_key=gemini_key)
+
+MODEL_NAME = "gemini-3.5-flash-lite"
+
 
 def generate_call_summary(transcript: list) -> dict:
     """
     Takes the conversation transcript and returns a structured JSON summary.
     """
-    prompt = f"""
-Analyze the following customer support conversation transcript for Aura Skincare and generate a structured JSON object.
 
-TRANSCRIPT:
-{json.dumps(transcript, indent=2)}
-
-Return ONLY a valid JSON object with EXACTLY this structure:
-{{
-  "customer_intent": "<one of: ORDER_TRACKING, RETURN_REFUND, CANCELLATION, PRODUCT_QUERY, OUT_OF_SCOPE, GENERAL_INQUIRY>",
-  "order_id": "<order ID if mentioned, or null>",
-  "resolution_status": "<RESOLVED, UNRESOLVED, or ESCALATED>",
-  "call_summary": "<concise 1-2 sentence description of customer request and outcome>"
-}}
-"""
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1
+    conversation = "\n".join(
+        f"{item.get('speaker', 'Unknown')}: {item.get('text', '')}"
+        for item in transcript
     )
-    
-    raw_content = response.choices[0].message.content.strip()
-    
-    # Strip potential markdown formatting if returned
-    if raw_content.startswith("```"):
-        raw_content = raw_content.split("```")[1]
-        if raw_content.startswith("json"):
-            raw_content = raw_content[4:]
-    raw_content = raw_content.strip()
-    
+
+    prompt = f"""
+Summarize this Aura Skincare customer support conversation.
+
+CONVERSATION:
+{conversation}
+
+Return JSON with exactly these four fields:
+- customer_intent: ORDER_TRACKING, RETURN_REFUND, CANCELLATION, PRODUCT_QUERY, OUT_OF_SCOPE, or GENERAL_INQUIRY
+- order_id: order ID if mentioned, otherwise null
+- resolution_status: RESOLVED, UNRESOLVED, or ESCALATED
+- call_summary: concise 1-2 sentence description of the request and outcome
+
+Return only valid JSON.
+"""
+
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt,
+        config={
+            "temperature": 0.1,
+            "response_mime_type": "application/json",
+        },
+    )
+
+    raw_content = (response.text or "").strip()
+
     try:
-        return json.loads(raw_content)
-    except Exception:
+        result = json.loads(raw_content)
+
+        expected_keys = {
+            "customer_intent",
+            "order_id",
+            "resolution_status",
+            "call_summary",
+        }
+
+        if not isinstance(result, dict) or set(result.keys()) != expected_keys:
+            raise ValueError("Gemini returned an unexpected summary structure.")
+
+        return result
+
+    except (json.JSONDecodeError, ValueError):
         return {
             "customer_intent": "GENERAL_INQUIRY",
             "order_id": None,
-            "resolution_status": "RESOLVED",
-            "call_summary": raw_content
+            "resolution_status": "UNRESOLVED",
+            "call_summary": raw_content or "Unable to generate call summary.",
         }
